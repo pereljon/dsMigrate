@@ -172,12 +172,12 @@ def doMigration(aDirectory,userIDs,groupIDs):
     logging.info(str(datetime.datetime.now()))
 
 # Set the logging level
-if kTestingMode
-    theLogLevel=logging.DEBUG
-else
-    theLogLevel=logging.INFO
-logging.basicConfig(filename='dsMigrate.log',level=theLogLevel)
-logging.info("### Starting ###")
+if kTestingMode:
+    logging.basicConfig(filename='dsMigrate.log',level=logging.DEBUG)
+    logging.info("### Starting in Test Mode ###")
+else:
+    logging.basicConfig(filename='dsMigrate.log',level=logging.INFO)
+    logging.info("### Starting in Production Mode###")
 
 # Check we are running with administrator privileges
 if not kTestingMode and os.getuid()!=0:
