@@ -158,11 +158,17 @@ def doMigration(aDirectory,userIDs,groupIDs):
             if len(pathRead) > 1:
                 # ACL present
                 # Find order,user/group,and permission on each ACE
-                theACL=re.findall(r"\s(\d+): ((?:group|user):[\w|.]+)\s(.*)","\n".join(pathRead[1:]))
+                theACL=re.findall(r"\s(\d+):\s((?:group|user):[\w|.]+)(?:\s(inherited))?\s(.*)","\n".join(pathRead[1:]))
                 for theACE in theACL:
                     # Rewrite ACEs using target directory
-                    logging.debug ("Changing ACL: %s %s %s for %s",theACE[0],theACE[1],theACE[2],theName)
-                    theCommand="sudo","chmod","=a#",theACE[0],theACE[1]+" "+theACE[2],thePath
+                    if theACE[2]=="inherited":
+                        # Inherited ACL
+                        logging.debug ("Changing inherited ACL: %s %s %s for %s",theACE[0],theACE[1],theACE[3],theName)
+                        theCommand="sudo","chmod","=ai#",theACE[0],theACE[1]+" "+theACE[3],thePath
+                    else:
+                        # Non-inherited ACL
+                        logging.debug ("Changing ACL: %s %s %s for %s",theACE[0],theACE[1],theACE[3],theName)
+                        theCommand="sudo","chmod","=a#",theACE[0],theACE[1]+" "+theACE[3],thePath
                     if kTestingMode:
                         print " ".join(theCommand)
                     else:
@@ -203,7 +209,7 @@ targetGroups=dsRead(targetDirectory,"/Groups","PrimaryGroupID")
 mergedGroupIDs=dsMergeUniqueIDs(sourceGroups,targetGroups)
 
 # Get migration path
-migrationPath=raw_input("Enter the path to migrate: ")
+migrationPath=raw_input("Enter the path to migrate: ").strip()
 if not os.path.exists(migrationPath):
     print "Path not found. Bye."
     exit(0)
