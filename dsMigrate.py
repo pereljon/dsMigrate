@@ -110,8 +110,8 @@ def dsMergeUniqueIDs(dsDictA,dsDictB):
     return aDictionary
 
 def doMigration(aDirectory,userIDs,groupIDs):
-    logging.info("Starting migration on: %s",aDirectory)
-    logging.info(str(datetime.datetime.now()))
+    timeStart=datetime.datetime.now()
+    logging.info("Starting migration on: %s at: %s",aDirectory,str(timeStart))
     fileCount=0
     for dirName,subdirList,fileList in os.walk(aDirectory):
         logging.info("Files: %s, Walking: %s",fileCount,dirName)
@@ -128,7 +128,6 @@ def doMigration(aDirectory,userIDs,groupIDs):
             theGroup=thePOSIX[0][1]
             if theUser in userIDs and theGroup in groupIDs:
                 # Change owner and group
-                print theUser,userIDs[theUser],theGroup,groupIDs[theGroup]
                 logging.debug ("Changing user & group: %s:%s for %s",userIDs[theUser][1],groupIDs[theGroup][1],thePath)
                 theCommand="sudo","chown",userIDs[theUser][1]+":"+groupIDs[theGroup][1],thePath
                 if kTestingMode:
@@ -137,7 +136,6 @@ def doMigration(aDirectory,userIDs,groupIDs):
                     p=subprocess.Popen(theCommand)
             elif theUser in userIDs:
                 # Change owner
-                print theUser,userIDs[theUser]
                 logging.debug ("Changing user: %s for %s",userIDs[theUser][1],theName)
                 theCommand="sudo","chown",userIDs[theUser][1],thePath
                 if kTestingMode:
@@ -146,7 +144,6 @@ def doMigration(aDirectory,userIDs,groupIDs):
                     p=subprocess.Popen(theCommand)
             elif theGroup in groupIDs:
                 # Change group
-                print theGroup,groupIDs[theGroup]
                 logging.debug ("Changing group: %s for %s",groupIDs[theGroup][1],theName)
                 theCommand="sudo","chown",":"+groupIDs[theGroup][1],thePath
                 if kTestingMode:
@@ -175,8 +172,12 @@ def doMigration(aDirectory,userIDs,groupIDs):
                         p=subprocess.Popen(theCommand)
             else:
                 logging.debug ("No ACL change for: %s",theName)
-    logging.info(str(datetime.datetime.now()))
+    timeEnd=datetime.datetime.now()
+    logging.info("Ending migration at: %s",str(timeEnd))
+    timeTotal=timeEnd-timeStart
+    logging.info("Total migration time: %s",str(timeTotal))
 
+# MAIN
 # Set the logging level
 if kTestingMode:
     logging.basicConfig(filename='dsMigrate.log',level=logging.DEBUG)
