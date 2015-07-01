@@ -109,25 +109,6 @@ def dsMergeUniqueIDs(dsDictA,dsDictB):
     logging.debug("%d records combined",len(aDictionary))
     return aDictionary
 
-
-# def dsMergeGUIDs(dsDictA,dsDictB):
-# # Create merged dictionary of OD and AD GUIDs(NOT USED)
-#     aDictionary={}
-#     for nextKey in dsDictA.iterkeys():
-#         if nextKey in dsDictB:
-#             # Combine uniqueIDs as tuple in new dictionary
-#             aDictionary[dsDictA[nextKey][1]]=dsDictB[nextKey][1]
-#         else:
-#             # Report on OpenDirectory users missing in Active Directory
-#             print "OpenDirectory record missing in Active Directory:",nextKey
-#     print "# Users combined",len(aDictionary)
-#     return(aDictionary)
-
-# def findChownUID(uniqueID):
-# # Not using this.
-#     print "sudo find",kVolume,"-uid ",uniqueID[0],"-exec chown",uniqueID[1],"{} \;"
-#     time.sleep(5)
-
 def doMigration(aDirectory,userIDs,groupIDs):
     logging.info("Starting migration on: %s",aDirectory)
     logging.info(str(datetime.datetime.now()))
@@ -139,14 +120,12 @@ def doMigration(aDirectory,userIDs,groupIDs):
             # For all files and subdirectories
             fileCount=fileCount+1
             thePath=os.path.join(dirName,theName)
-            logging.debug(thePath)
             # List file at thePath
             pathRead=subprocess.check_output(["ls","-aled",thePath]).splitlines()
             # Read POSIX owner/group
             thePOSIX=re.findall(r".+?\s+.+?\s+(.+?)\s+(.+?)\s+.+",pathRead[0])
             theUser=thePOSIX[0][0]
             theGroup=thePOSIX[0][1]
-            print thePath
             if theUser in userIDs and theGroup in groupIDs:
                 # Change owner and group
                 print theUser,userIDs[theUser],theGroup,groupIDs[theGroup]
@@ -156,27 +135,24 @@ def doMigration(aDirectory,userIDs,groupIDs):
                     print " ".join(theCommand)
                 else:
                     p=subprocess.Popen(theCommand)
-                    logging.debug(p.poll())
             elif theUser in userIDs:
                 # Change owner
                 print theUser,userIDs[theUser]
-                logging.debug ("Changing user: %s for %s",userIDs[theUser][1],thePath)
+                logging.debug ("Changing user: %s for %s",userIDs[theUser][1],theName)
                 theCommand="sudo","chown",userIDs[theUser][1],thePath
                 if kTestingMode:
                     print " ".join(theCommand)
                 else:
                     p=subprocess.Popen(theCommand)
-                    logging.debug(p.poll())
             elif theGroup in groupIDs:
                 # Change group
                 print theGroup,groupIDs[theGroup]
-                logging.debug ("Changing group: %s for %s",groupIDs[theGroup][1],thePath)
+                logging.debug ("Changing group: %s for %s",groupIDs[theGroup][1],theName)
                 theCommand="sudo","chown",":"+groupIDs[theGroup][1],thePath
                 if kTestingMode:
                     print " ".join(theCommand)
                 else:
                     p=subprocess.Popen(theCommand)
-                    logging.debug(p.poll())
             else:
                 logging.debug ("No POSIX change for: %s",theName)
             if len(pathRead) > 1:
@@ -185,24 +161,30 @@ def doMigration(aDirectory,userIDs,groupIDs):
                 theACL=re.findall(r"\s(\d+): ((?:group|user):[\w|.]+)\s(.*)","\n".join(pathRead[1:]))
                 for theACE in theACL:
                     # Rewrite ACEs using target directory
-                    logging.debug ("Changing ACL: %s %s %s for %s",theACE[0],theACE[1],theACE[2],thePath)
+                    logging.debug ("Changing ACL: %s %s %s for %s",theACE[0],theACE[1],theACE[2],theName)
                     theCommand="sudo","chmod","=a#",theACE[0],theACE[1]+" "+theACE[2],thePath
                     if kTestingMode:
                         print " ".join(theCommand)
                     else:
                         p=subprocess.Popen(theCommand)
-                        logging.debug(p.poll())
             else:
                 logging.debug ("No ACL change for: %s",theName)
     logging.info(str(datetime.datetime.now()))
 
-logging.basicConfig(filename='dsMigrate.log',level=logging.DEBUG)
+# Set the logging level
+if kTestingMode
+    theLogLevel=logging.DEBUG
+else
+    theLogLevel=logging.INFO
+logging.basicConfig(filename='dsMigrate.log',level=theLogLevel)
 logging.info("### Starting ###")
+
+# Check we are running with administrator privileges
 if not kTestingMode and os.getuid()!=0:
     print("You must run this script with administrator privileges.")
     sys.exit(1)
 
-logging.debug("Getting directories")
+# Get source and target directories from Directory Services
 (sourceDirectory,targetDirectory)=dsGetDirectories()
 print "Migrating from:",sourceDirectory[2],"to:",targetDirectory[2]
 if not kTestingMode:
@@ -210,20 +192,17 @@ if not kTestingMode:
     if theInput!="CONTINUE":
         sys.exit(1)
 
-logging.debug("Reading source users")
+# Read source and target users and merge into a single table
 sourceUsers=dsRead(sourceDirectory,"/Users","UniqueID")
-logging.debug("Reading target users")
 targetUsers=dsRead(targetDirectory,"/Users","UniqueID")
-print("Merging users:")
 mergedUserIDs=dsMergeUniqueIDs(sourceUsers,targetUsers)
 
-logging.debug("Reading source groups")
+# Read source and target groups and merge into a single table
 sourceGroups=dsRead(sourceDirectory,"/Groups","PrimaryGroupID")
-logging.debug("Reading target groups")
 targetGroups=dsRead(targetDirectory,"/Groups","PrimaryGroupID")
-print("Merging groups:")
 mergedGroupIDs=dsMergeUniqueIDs(sourceGroups,targetGroups)
 
+# Get migration path
 migrationPath=raw_input("Enter the path to migrate: ")
 if not os.path.exists(migrationPath):
     print "Path not found. Bye."
@@ -234,6 +213,7 @@ if not kTestingMode:
     if theInput!="CONTINUE":
         sys.exit(1)
 
+# Do the migration
 doMigration(migrationPath,mergedUserIDs,mergedGroupIDs)
 
 logging.info("### Ending ###")
