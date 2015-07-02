@@ -118,7 +118,7 @@ def doMigration(aDirectory,userIDs,groupIDs):
         # Directory walk
         for theName in fileList+subdirList:
             # For all files and subdirectories
-            fileCount=fileCount+1
+            fileCount+=1
             thePath=os.path.join(dirName,theName)
             # List file at thePath
             pathRead=subprocess.check_output(["ls","-aled",thePath]).splitlines()
@@ -155,27 +155,58 @@ def doMigration(aDirectory,userIDs,groupIDs):
             if len(pathRead) > 1:
                 # ACL present
                 # Find order,user/group,and permission on each ACE
-                theACL=re.findall(r"\s(\d+):\s((?:group|user):[\w|.]+)(?:\s(inherited))?\s(.*)","\n".join(pathRead[1:]))
+                theACL=re.findall(r"\s(\d+):\s(?:((?:group|user):[\w|.]+)|([A-Z0-9]{8}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{12}))(?:\s(inherited))?\s(.*)","\n".join(pathRead[1:]))
+                aceDeleteCount=0
                 for theACE in theACL:
                     # Rewrite ACEs using target directory
-                    if theACE[2]=="inherited":
-                        # Inherited ACL
-                        logging.debug ("Changing inherited ACL: %s %s %s for %s",theACE[0],theACE[1],theACE[3],theName)
-                        theCommand="sudo","chmod","=ai#",theACE[0],theACE[1]+" "+theACE[3],thePath
+                    aceOrder=str(int(theACE[0])-aceDeleteCount)   # Group 0: ACE order (minus number of ACEs removed)
+                    aceOwner=theACE[1]                  # Group 1: ACE group/user if valid
+                    aceOrphan=theACE[2]                 # Group 2: GUID if group/user not valid
+                    aceInherited=theACE[3]              # Group 3: "inherited" if inherited ACE
+                    acePermission=theACE[4]             # Group 4: ACL permision string
+                    if aceOrphan:
+                        # Orphan ACE. Will be deleted
+                        logging.warn ("Removing orphan ACE: %s %s %s for %s",aceOrder,aceOrphan,acePermission,theName)
+                        chmodCommand=("sudo","chmod","-a#",aceOrder,thePath)
+                        # Keep track of how many ACEs we have deleted
+                        aceDeleteCount+=1
+                    elif aceInherited:
+                        # Inherited ACE
+                        logging.debug ("Changing inherited ACE: %s %s %s for %s",aceOrder,aceOwner,acePermission,theName)
+                        chmodCommand="sudo","chmod","=ai#",aceOrder,aceOwner+" "+acePermission,thePath
                     else:
-                        # Non-inherited ACL
-                        logging.debug ("Changing ACL: %s %s %s for %s",theACE[0],theACE[1],theACE[3],theName)
-                        theCommand="sudo","chmod","=a#",theACE[0],theACE[1]+" "+theACE[3],thePath
+                        # Non-inherited ACE
+                        logging.debug ("Changing ACE: %s %s %s for %s",aceOrder,aceOwner,acePermission,theName)
+                        chmodCommand="sudo","chmod","=a#",aceOrder,aceOwner+" "+acePermission,thePath
                     if kTestingMode:
-                        print " ".join(theCommand)
+                        print " ".join(chmodCommand)
                     else:
-                        p=subprocess.Popen(theCommand)
+                        # p=subprocess.Popen(theCommand)
+                        returnCode=subprocess.call(chmodCommand)
+                        if returnCode:
+                            # Error in chmod command. Try unlocking file and doing command again.
+                            logging.warn ("Return code: %s for: %s",returnCode," ".join(chmodCommand))
+                            logging.warn ("Unlocking file: %s",thePath)
+                            unlockCommand="sudo","chflags","nouchg",thePath
+                            returnCode=subprocess.call(unlockCommand)
+                            if returnCode:
+                                logging.error ("Return code: %s for: %s",returnCode," ".join(unlockCommand))
+                            else:
+                                returnCode=subprocess.call(chmodCommand)
+                                if returnCode:
+                                    logging.error ("Return code: %s for: %s",returnCode," ".join(chmodCommand))
+                                logging.warn ("Locking file: %s",thePath)
+                                lockCommand="sudo","chflags","uchg",thePath
+                                returnCode=subprocess.call(lockCommand)
+                                if returnCode:
+                                    logging.error ("Return code: %s for: %s",returnCode," ".join(unlockCommand))
             else:
                 logging.debug ("No ACL change for: %s",theName)
     timeEnd=datetime.datetime.now()
     logging.info("Ending migration at: %s",str(timeEnd))
     timeTotal=timeEnd-timeStart
     logging.info("Total migration time: %s",str(timeTotal))
+    logging.info("Total files: %s",fileCount)
 
 # MAIN
 # Set the logging level
