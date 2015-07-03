@@ -222,11 +222,12 @@ def migratePath(thePath):
 def doMigration(aDirectory):
     timeStart=datetime.datetime.now()
     logging.info("Starting migration on: %s at: %s",aDirectory,str(timeStart))
+    print "Starting migration on:",aDirectory,"at:",timeStart
     pool = multiprocessing.Pool()
     fileCount=0
     # Directory walk
     for dirName,subdirList,fileList in os.walk(aDirectory):
-        logging.info("Files: %s, Walking: %s",fileCount,dirName)
+        logging.debug("Files: %s, Walking: %s",fileCount,dirName)
         # Make path list of files and subdirectories
         filesAndSubdirs=[os.path.join(dirName,nextFile) for nextFile in fileList+subdirList]
         # Increment file count
