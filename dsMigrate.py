@@ -11,9 +11,11 @@ import subprocess
 import re
 import logging
 import datetime
+import multiprocessing
 
 # CONSTANTS
 kTestingMode=True
+kMultiprocess=True
 
 def dsGetDirectories():
     # Check Directory Services search order
@@ -109,104 +111,142 @@ def dsMergeUniqueIDs(dsDictA,dsDictB):
     logging.debug("%d records combined",len(aDictionary))
     return aDictionary
 
-def doMigration(aDirectory,userIDs,groupIDs):
+def unlockFile(aPath):
+    # Unlock file
+    logging.warn ("Unlocking file: %s",aPath)
+    unlockCommand="sudo","chflags","nouchg",aPath
+    returnCode=subprocess.call(unlockCommand)
+    if returnCode:
+        logging.error("Return code: %s for: %s",returnCode," ".join(unlockCommand))
+    return returnCode
+
+def lockFile(aPath):
+    # Lock file
+    logging.warn ("Locking file: %s",aPath)
+    lockCommand="sudo","chflags","uchg",aPath
+    returnCode=subprocess.call(lockCommand)
+    if returnCode:
+        logging.error("Return code: %s for: %s",returnCode," ".join(lockCommand))
+    return returnCode
+
+def runCommand(aCommand):
+    if kTestingMode:
+        print " ".join(aCommand)
+        returnCode=0
+    else:
+        returnCode=subprocess.call(aCommand)
+        if returnCode:
+            logging.warn("Return code: %s for: %s",returnCode," ".join(aCommand))
+            # Unlock the path (last item in command list)
+            returnCode=unlockFile(aCommand[-1])
+            if returnCode:
+                # Error unlocking
+                return returnCode
+            else:
+                # Set return code to "unlocked" so we lock file later
+                returnCode="unlocked"
+                # Run command again
+                retryCode=subprocess.call(aCommand)
+                if retryCode:
+                    # Failed to run the command the second time
+                    logging.error("Return code: %s for: %s",retryCode," ".join(aCommand))
+    return returnCode
+
+def migratePath(thePath):
+    # Track if this path has been unlocked
+    unlockedPath=False
+    # List file at thePath
+    pathRead=subprocess.check_output(["ls","-aled",thePath]).splitlines()
+    # Read POSIX owner/group
+    thePOSIX=re.findall(r".+?\s+.+?\s+(.+?)\s+(.+?)\s+.+",pathRead[0])
+    theUser=thePOSIX[0][0]
+    theGroup=thePOSIX[0][1]
+    # Change ownership and/or group
+    if theUser in mergedUserIDs and theGroup in mergedGroupIDs:
+        # Change owner and group
+        logging.debug ("Changing user & group: %s:%s for %s",mergedUserIDs[theUser][1],mergedGroupIDs[theGroup][1],thePath)
+        chownCommand="sudo","chown",mergedUserIDs[theUser][1]+":"+mergedGroupIDs[theGroup][1],thePath
+        commandResult=runCommand(chownCommand)
+    elif theUser in mergedUserIDs:
+        # Change owner
+        logging.debug ("Changing user: %s for %s",mergedUserIDs[theUser][1],thePath)
+        chownCommand="sudo","chown",mergedUserIDs[theUser][1],thePath
+        commandResult=runCommand(chownCommand)
+    elif theGroup in mergedGroupIDs:
+        # Change group
+        logging.debug ("Changing group: %s for %s",mergedGroupIDs[theGroup][1],thePath)
+        chownCommand="sudo","chown",":"+mergedGroupIDs[theGroup][1],thePath
+        commandResult=runCommand(chownCommand)
+    else:
+        logging.debug ("No POSIX change for: %s",thePath)
+        commandResult=0
+    # Track if we unlocked the file
+    if commandResult=="unlocked":
+        unlockedPath=True
+    if len(pathRead) > 1:
+        # ACL present
+        # Find order,user/group,and permission on each ACE
+        theACL=re.findall(r"\s(\d+):\s(?:((?:group|user):[\w|.]+)|([A-Z0-9]{8}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{12}))(?:\s(inherited))?\s(.*)","\n".join(pathRead[1:]))
+        aceDeleteCount=0
+        for theACE in theACL:
+            # Rewrite ACEs using target directory
+            aceOrder=str(int(theACE[0])-aceDeleteCount)   # Group 0: ACE order (minus number of ACEs removed)
+            aceOwner=theACE[1]                  # Group 1: ACE group/user if valid
+            aceOrphan=theACE[2]                 # Group 2: GUID if group/user not valid
+            aceInherited=theACE[3]              # Group 3: "inherited" if inherited ACE
+            acePermission=theACE[4]             # Group 4: ACL permision string
+            if aceOrphan:
+                # Orphan ACE. Will be deleted
+                logging.warn ("Removing orphan ACE: %s %s %s for %s",aceOrder,aceOrphan,acePermission,thePath)
+                chmodCommand=("sudo","chmod","-a#",aceOrder,thePath)
+                # Keep track of how many ACEs we have deleted
+                aceDeleteCount+=1
+            elif aceInherited:
+                # Inherited ACE
+                logging.debug ("Changing inherited ACE: %s %s %s for %s",aceOrder,aceOwner,acePermission,thePath)
+                chmodCommand="sudo","chmod","=ai#",aceOrder,aceOwner+" "+acePermission,thePath
+            else:
+                # Non-inherited ACE
+                logging.debug ("Changing ACE: %s %s %s for %s",aceOrder,aceOwner,acePermission,thePath)
+                chmodCommand="sudo","chmod","=a#",aceOrder,aceOwner+" "+acePermission,thePath
+            commandResult=runCommand(chmodCommand)
+            # Track if we unlocked the file
+            if commandResult=="unlocked":
+                unlockedPath=True
+        if unlockedPath:
+            # Lock the file if we unlocked the file
+            lockFile(thePath)
+    else:
+        logging.debug ("No ACL change for: %s",thePath)
+
+def doMigration(aDirectory):
     timeStart=datetime.datetime.now()
     logging.info("Starting migration on: %s at: %s",aDirectory,str(timeStart))
+    pool = multiprocessing.Pool()
     fileCount=0
+    # Directory walk
     for dirName,subdirList,fileList in os.walk(aDirectory):
         logging.info("Files: %s, Walking: %s",fileCount,dirName)
-        # Directory walk
-        for theName in fileList+subdirList:
-            # For all files and subdirectories
-            fileCount+=1
-            thePath=os.path.join(dirName,theName)
-            # List file at thePath
-            pathRead=subprocess.check_output(["ls","-aled",thePath]).splitlines()
-            # Read POSIX owner/group
-            thePOSIX=re.findall(r".+?\s+.+?\s+(.+?)\s+(.+?)\s+.+",pathRead[0])
-            theUser=thePOSIX[0][0]
-            theGroup=thePOSIX[0][1]
-            if theUser in userIDs and theGroup in groupIDs:
-                # Change owner and group
-                logging.debug ("Changing user & group: %s:%s for %s",userIDs[theUser][1],groupIDs[theGroup][1],thePath)
-                theCommand="sudo","chown",userIDs[theUser][1]+":"+groupIDs[theGroup][1],thePath
-                if kTestingMode:
-                    print " ".join(theCommand)
-                else:
-                    p=subprocess.Popen(theCommand)
-            elif theUser in userIDs:
-                # Change owner
-                logging.debug ("Changing user: %s for %s",userIDs[theUser][1],theName)
-                theCommand="sudo","chown",userIDs[theUser][1],thePath
-                if kTestingMode:
-                    print " ".join(theCommand)
-                else:
-                    p=subprocess.Popen(theCommand)
-            elif theGroup in groupIDs:
-                # Change group
-                logging.debug ("Changing group: %s for %s",groupIDs[theGroup][1],theName)
-                theCommand="sudo","chown",":"+groupIDs[theGroup][1],thePath
-                if kTestingMode:
-                    print " ".join(theCommand)
-                else:
-                    p=subprocess.Popen(theCommand)
-            else:
-                logging.debug ("No POSIX change for: %s",theName)
-            if len(pathRead) > 1:
-                # ACL present
-                # Find order,user/group,and permission on each ACE
-                theACL=re.findall(r"\s(\d+):\s(?:((?:group|user):[\w|.]+)|([A-Z0-9]{8}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{12}))(?:\s(inherited))?\s(.*)","\n".join(pathRead[1:]))
-                aceDeleteCount=0
-                for theACE in theACL:
-                    # Rewrite ACEs using target directory
-                    aceOrder=str(int(theACE[0])-aceDeleteCount)   # Group 0: ACE order (minus number of ACEs removed)
-                    aceOwner=theACE[1]                  # Group 1: ACE group/user if valid
-                    aceOrphan=theACE[2]                 # Group 2: GUID if group/user not valid
-                    aceInherited=theACE[3]              # Group 3: "inherited" if inherited ACE
-                    acePermission=theACE[4]             # Group 4: ACL permision string
-                    if aceOrphan:
-                        # Orphan ACE. Will be deleted
-                        logging.warn ("Removing orphan ACE: %s %s %s for %s",aceOrder,aceOrphan,acePermission,theName)
-                        chmodCommand=("sudo","chmod","-a#",aceOrder,thePath)
-                        # Keep track of how many ACEs we have deleted
-                        aceDeleteCount+=1
-                    elif aceInherited:
-                        # Inherited ACE
-                        logging.debug ("Changing inherited ACE: %s %s %s for %s",aceOrder,aceOwner,acePermission,theName)
-                        chmodCommand="sudo","chmod","=ai#",aceOrder,aceOwner+" "+acePermission,thePath
-                    else:
-                        # Non-inherited ACE
-                        logging.debug ("Changing ACE: %s %s %s for %s",aceOrder,aceOwner,acePermission,theName)
-                        chmodCommand="sudo","chmod","=a#",aceOrder,aceOwner+" "+acePermission,thePath
-                    if kTestingMode:
-                        print " ".join(chmodCommand)
-                    else:
-                        # p=subprocess.Popen(theCommand)
-                        returnCode=subprocess.call(chmodCommand)
-                        if returnCode:
-                            # Error in chmod command. Try unlocking file and doing command again.
-                            logging.warn ("Return code: %s for: %s",returnCode," ".join(chmodCommand))
-                            logging.warn ("Unlocking file: %s",thePath)
-                            unlockCommand="sudo","chflags","nouchg",thePath
-                            returnCode=subprocess.call(unlockCommand)
-                            if returnCode:
-                                logging.error ("Return code: %s for: %s",returnCode," ".join(unlockCommand))
-                            else:
-                                returnCode=subprocess.call(chmodCommand)
-                                if returnCode:
-                                    logging.error ("Return code: %s for: %s",returnCode," ".join(chmodCommand))
-                                logging.warn ("Locking file: %s",thePath)
-                                lockCommand="sudo","chflags","uchg",thePath
-                                returnCode=subprocess.call(lockCommand)
-                                if returnCode:
-                                    logging.error ("Return code: %s for: %s",returnCode," ".join(unlockCommand))
-            else:
-                logging.debug ("No ACL change for: %s",theName)
+        # Make path list of files and subdirectories
+        filesAndSubdirs=[os.path.join(dirName,nextFile) for nextFile in fileList+subdirList]
+        # Increment file count
+        fileCount+=len(filesAndSubdirs)
+        if kMultiprocess:
+            pool.map_async(migratePath,filesAndSubdirs)
+        else:
+            for nextPath in filesAndSubdirs:
+                # For all files and subdirectories
+                migratePath(nextPath)
+    pool.close()
+    pool.join()
     timeEnd=datetime.datetime.now()
     logging.info("Ending migration at: %s",str(timeEnd))
     timeTotal=timeEnd-timeStart
     logging.info("Total migration time: %s",str(timeTotal))
     logging.info("Total files: %s",fileCount)
+    if timeTotal.seconds > 0:
+        filesPerSec=fileCount/timeTotal.seconds
+        logging.info("Files per second: %s",filesPerSec)
 
 # MAIN
 # Set the logging level
@@ -252,7 +292,7 @@ if not kTestingMode:
         sys.exit(1)
 
 # Do the migration
-doMigration(migrationPath,mergedUserIDs,mergedGroupIDs)
+doMigration(migrationPath)
 
 logging.info("### Ending ###")
 sys.exit(0)
