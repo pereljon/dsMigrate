@@ -40,16 +40,14 @@ def dsGetDirectories():
     if len(theNodes)!=3:
         logging.error("Error: Unexpected length for Search Path: %s",theNodes)
         sys.exit(1)
-    # sourceNode=theNodes[2]
-    sourceNode=theNodes[1]
+    sourceNode=theNodes[2]
     if sourceNode.startswith("/LDAPv3/"):
         sourceType="LDAP"
         sourceDomain=re.search("/LDAPv3/(.+)",sourceNode).group(1)
     elif sourceNode.startswith("/Active Directory/"):
         sourceType="AD"
         sourceDomain=re.search("/Active Directory/(.+)/All Domains",sourceNode).group(1)
-    # targetNode=theNodes[1]
-    targetNode=theNodes[2]
+    targetNode=theNodes[1]
     if targetNode.startswith("/LDAPv3/"):
         targetType="LDAP"
         targetDomain=re.search("/LDAPv3/(.+)",targetNode).group(1)
