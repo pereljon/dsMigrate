@@ -24,10 +24,10 @@ def dsGetDirectories():
     try:
         dsSearch=subprocess.check_output(["dscl","-plist","/Search","-read","/"])
     except exceptions.OSError as theError:
-        logging.critical("OS Error: %s",theError)
+        logging.critical("dscl: OS Error: %s",theError)
         sys.exit(1)
     except:
-        logging.critical("Unexpected error: %s",sys.exc_info()[0])
+        logging.critical("dscl: Unexpected error: %s",sys.exc_info()[0])
         sys.exit(1)
     # Find CSPSearchPaths
     theSearchPath=re.search(r"\s*<key>dsAttrTypeStandard:CSPSearchPath</key>\n\s*<array>\n(?:\s*<string>.+</string>\n)+\s*</array>\n",dsSearch)
@@ -64,10 +64,10 @@ def dsRead(theDirectory,thePath,theKey):
     try:
         theRecords=subprocess.check_output(["dscl","-plist",theNode,"-readall",thePath,theKey,"GeneratedUID"])
     except exceptions.OSError as theError:
-        logging.critical("OS Error: %s",theError)
+        logging.critical("dscl: OS Error: %s",theError)
         sys.exit(1)
     except:
-        logging.critical("Unexpected error: %s",sys.exc_info()[0])
+        logging.critical("dscl: Unexpected error: %s",sys.exc_info()[0])
         sys.exit(1)
     if theKey=="UniqueID":
         # Create dictionary of GeneratedUID and UniqueID by RecordName
@@ -116,7 +116,7 @@ def dsMergeUniqueIDs(dsDictA,dsDictB):
 def unlockFile(aPath):
     # Unlock file
     logging.warn ("Unlocking file: %s",aPath)
-    unlockCommand="sudo","chflags","nouchg",aPath
+    unlockCommand="chflags","nouchg",aPath
     returnCode=subprocess.call(unlockCommand)
     if returnCode:
         logging.error("Return code: %s for: %s",returnCode," ".join(unlockCommand))
@@ -125,7 +125,7 @@ def unlockFile(aPath):
 def lockFile(aPath):
     # Lock file
     logging.warn ("Locking file: %s",aPath)
-    lockCommand="sudo","chflags","uchg",aPath
+    lockCommand="chflags","uchg",aPath
     returnCode=subprocess.call(lockCommand)
     if returnCode:
         logging.error("Return code: %s for: %s",returnCode," ".join(lockCommand))
@@ -168,17 +168,17 @@ def migratePath(thePath):
     if theUser in mergedUserIDs and theGroup in mergedGroupIDs:
         # Change owner and group
         logging.debug ("Changing user & group: %s:%s for %s",mergedUserIDs[theUser][1],mergedGroupIDs[theGroup][1],thePath)
-        chownCommand="sudo","chown",mergedUserIDs[theUser][1]+":"+mergedGroupIDs[theGroup][1],thePath
+        chownCommand="chown",mergedUserIDs[theUser][1]+":"+mergedGroupIDs[theGroup][1],thePath
         commandResult=runCommand(chownCommand)
     elif theUser in mergedUserIDs:
         # Change owner
         logging.debug ("Changing user: %s for %s",mergedUserIDs[theUser][1],thePath)
-        chownCommand="sudo","chown",mergedUserIDs[theUser][1],thePath
+        chownCommand="chown",mergedUserIDs[theUser][1],thePath
         commandResult=runCommand(chownCommand)
     elif theGroup in mergedGroupIDs:
         # Change group
         logging.debug ("Changing group: %s for %s",mergedGroupIDs[theGroup][1],thePath)
-        chownCommand="sudo","chown",":"+mergedGroupIDs[theGroup][1],thePath
+        chownCommand="chown",":"+mergedGroupIDs[theGroup][1],thePath
         commandResult=runCommand(chownCommand)
     else:
         logging.debug ("No POSIX change for: %s",thePath)
@@ -201,17 +201,17 @@ def migratePath(thePath):
             if aceOrphan:
                 # Orphan ACE. Will be deleted
                 logging.warn ("Removing orphan ACE: %s %s for %s",aceOrder,aceOrphan,thePath)
-                chmodCommand=("sudo","chmod","-a#",aceOrder,thePath)
+                chmodCommand=("chmod","-a#",aceOrder,thePath)
                 # Keep track of how many ACEs we have deleted
                 aceDeleteCount+=1
             elif aceInherited:
                 # Inherited ACE
                 logging.debug ("Changing inherited ACE: %s %s %s for %s",aceOrder,aceOwner,acePermission,thePath)
-                chmodCommand="sudo","chmod","=ai#",aceOrder,aceOwner+" "+acePermission,thePath
+                chmodCommand="chmod","=ai#",aceOrder,aceOwner+" "+acePermission,thePath
             else:
                 # Non-inherited ACE
                 logging.debug ("Changing ACE: %s %s %s for %s",aceOrder,aceOwner,acePermission,thePath)
-                chmodCommand="sudo","chmod","=a#",aceOrder,aceOwner+" "+acePermission,thePath
+                chmodCommand="chmod","=a#",aceOrder,aceOwner+" "+acePermission,thePath
             commandResult=runCommand(chmodCommand)
             # Track if we unlocked the file
             if commandResult=="unlocked":
