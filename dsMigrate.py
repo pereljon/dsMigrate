@@ -15,13 +15,14 @@ import multiprocessing
 
 # CONSTANTS
 kTestingMode=True
+kForceDebug=False
 kMultiprocess=True
 
 def dsGetDirectories():
     # Check Directory Services search order
     logging.info("Get source and target directories")
     try:
-        dsSearch=subprocess.check_output(["dscl","/Search","-read","/"])
+        dsSearch=subprocess.check_output(["dscl","-plist","/Search","-read","/"])
     except exceptions.OSError as theError:
         logging.critical("OS Error: %s",theError)
         sys.exit(1)
@@ -29,23 +30,26 @@ def dsGetDirectories():
         logging.critical("Unexpected error: %s",sys.exc_info()[0])
         sys.exit(1)
     # Find CSPSearchPaths
-    theFind=re.search("CSPSearchPath:(\n( .*))*",dsSearch)
-    if not theFind:
+    theSearchPath=re.search(r"\s*<key>dsAttrTypeStandard:CSPSearchPath</key>\n\s*<array>\n(?:\s*<string>.+</string>\n)+\s*</array>\n",dsSearch)
+    if not theSearchPath:
         logging.error("Error: Couldn't find Search Path")
         sys.exit(1)
+    # Find array of nodes
+    theNodes=re.findall(r"\s*<string>(.+)</string>\n",theSearchPath.group(0))
     # Make sure appropriate search paths exist in correct order
-    theList=theFind.group(0).split("\n")
-    if len(theList)!=4:
-        logging.error("Error: Unexpected length for Search Path: %s",theList)
+    if len(theNodes)!=3:
+        logging.error("Error: Unexpected length for Search Path: %s",theNodes)
         sys.exit(1)
-    sourceNode=theList[3][1:]
+    # sourceNode=theNodes[2]
+    sourceNode=theNodes[1]
     if sourceNode.startswith("/LDAPv3/"):
         sourceType="LDAP"
         sourceDomain=re.search("/LDAPv3/(.+)",sourceNode).group(1)
     elif sourceNode.startswith("/Active Directory/"):
         sourceType="AD"
         sourceDomain=re.search("/Active Directory/(.+)/All Domains",sourceNode).group(1)
-    targetNode=theList[2][1:]
+    # targetNode=theNodes[1]
+    targetNode=theNodes[2]
     if targetNode.startswith("/LDAPv3/"):
         targetType="LDAP"
         targetDomain=re.search("/LDAPv3/(.+)",targetNode).group(1)
@@ -60,7 +64,7 @@ def dsRead(theDirectory,thePath,theKey):
     logging.info("Reading directory %s at path %s for key %s",theDirectory,thePath,theKey)
     theNode=theDirectory[2]
     try:
-        theRecords=subprocess.check_output(["dscl",theNode,"-readall",thePath,"RecordName",theKey,"GeneratedUID"])
+        theRecords=subprocess.check_output(["dscl","-plist",theNode,"-readall",thePath,theKey,"GeneratedUID"])
     except exceptions.OSError as theError:
         logging.critical("OS Error: %s",theError)
         sys.exit(1)
@@ -68,9 +72,9 @@ def dsRead(theDirectory,thePath,theKey):
         logging.critical("Unexpected error: %s",sys.exc_info()[0])
         sys.exit(1)
     if theKey=="UniqueID":
-        # Find RecordName and UniqueID
+        # Create dictionary of GeneratedUID and UniqueID by RecordName
         theFind={}
-        for nextFind in re.finditer(r"GeneratedUID: (.+)\nRecordName: ([\w|.]+).*\nUniqueID: (.+)\n",theRecords):
+        for nextFind in re.finditer(r"\s*<key>dsAttrTypeStandard:GeneratedUID</key>\n\s*<array>\n\s*<string>(.+)</string>\n\s*</array>\n\s*<key>dsAttrTypeStandard:RecordName</key>\n\s*<array>\n\s*<string>(.+)</string>\n\s*</array>\n\s*<key>dsAttrTypeStandard:UniqueID</key>\n\s*<array>\n\s*<string>(.+)</string>\n\s*</array>\n",theRecords):
             if nextFind.group(2)[0]=="_":
                 logging.debug("Skipping: %s",nextFind.group(2))
             elif int(nextFind.group(3)) < 1000:
@@ -80,7 +84,7 @@ def dsRead(theDirectory,thePath,theKey):
     elif theKey=="PrimaryGroupID":
         # Find RecordName and UniqueID
         theFind={}
-        for nextFind in re.finditer(r"GeneratedUID: (.+)\nPrimaryGroupID: (.+)\nRecordName: (.+)\n",theRecords):
+        for nextFind in re.finditer(r"\s*<key>dsAttrTypeStandard:GeneratedUID</key>\n\s*<array>\n\s*<string>(.+)</string>\n\s*</array>\n\s*<key>dsAttrTypeStandard:PrimaryGroupID</key>\n\s*<array>\n\s*<string>(.+)</string>\n\s*</array>\n\s*<key>dsAttrTypeStandard:RecordName</key>\n\s*<array>\n\s*<string>(.+)</string>\n\s*</array>\n",theRecords):
             if theDirectory[0]=="AD":
                 theFind[nextFind.group(3).replace(theDirectory[1]+"\\","")]=(nextFind.group(2),nextFind.group(1))
             else:
@@ -130,8 +134,8 @@ def lockFile(aPath):
     return returnCode
 
 def runCommand(aCommand):
+    logging.debug("runCommand: %s"," ".join(aCommand))
     if kTestingMode:
-        print " ".join(aCommand)
         returnCode=0
     else:
         returnCode=subprocess.call(aCommand)
@@ -153,6 +157,7 @@ def runCommand(aCommand):
     return returnCode
 
 def migratePath(thePath):
+    logging.debug("migratePath: %s",thePath)
     # Track if this path has been unlocked
     unlockedPath=False
     # List file at thePath
@@ -197,7 +202,7 @@ def migratePath(thePath):
             acePermission=theACE[4]             # Group 4: ACL permision string
             if aceOrphan:
                 # Orphan ACE. Will be deleted
-                logging.warn ("Removing orphan ACE: %s %s %s for %s",aceOrder,aceOrphan,acePermission,thePath)
+                logging.warn ("Removing orphan ACE: %s %s for %s",aceOrder,aceOrphan,thePath)
                 chmodCommand=("sudo","chmod","-a#",aceOrder,thePath)
                 # Keep track of how many ACEs we have deleted
                 aceDeleteCount+=1
@@ -217,29 +222,36 @@ def migratePath(thePath):
             # Lock the file if we unlocked the file
             lockFile(thePath)
     else:
-        logging.debug ("No ACL change for: %s",thePath)
+        logging.debug ("No ACLs to change for: %s",thePath)
 
 def doMigration(aDirectory):
+    # Start the timer
     timeStart=datetime.datetime.now()
-    logging.info("Starting migration on: %s at: %s",aDirectory,str(timeStart))
-    print "Starting migration on:",aDirectory,"at:",timeStart
-    pool = multiprocessing.Pool()
+    logging.info("Starting migration on: %s at: %s",migrationPath,str(timeStart))
+    print "Starting migration on:",migrationPath,"at:",timeStart
     fileCount=0
+    cpus=multiprocessing.cpu_count()-1
+    pool=multiprocessing.Pool(cpus)
     # Directory walk
     for dirName,subdirList,fileList in os.walk(aDirectory):
-        logging.debug("Files: %s, Walking: %s",fileCount,dirName)
         # Make path list of files and subdirectories
         filesAndSubdirs=[os.path.join(dirName,nextFile) for nextFile in fileList+subdirList]
-        # Increment file count
         fileCount+=len(filesAndSubdirs)
+        logging.debug("Files: %s, Walking: %s",fileCount,dirName)
+        # Increment file count
         if kMultiprocess:
+            # pool.apply(migratePath,filesAndSubdirs)
             pool.map_async(migratePath,filesAndSubdirs)
         else:
             for nextPath in filesAndSubdirs:
                 # For all files and subdirectories
                 migratePath(nextPath)
+    logging.info("End pool: %s", str(datetime.datetime.now()))
+    # Close pool
     pool.close()
+    # Wait until pool processes complete
     pool.join()
+    # Stop the timer
     timeEnd=datetime.datetime.now()
     logging.info("Ending migration at: %s",str(timeEnd))
     timeTotal=timeEnd-timeStart
@@ -250,50 +262,53 @@ def doMigration(aDirectory):
         logging.info("Files per second: %s",filesPerSec)
 
 # MAIN
-# Set the logging level
-if kTestingMode:
-    logging.basicConfig(filename='dsMigrate.log',level=logging.DEBUG)
-    logging.info("### Starting in Test Mode ###")
-else:
-    logging.basicConfig(filename='dsMigrate.log',level=logging.INFO)
-    logging.info("### Starting in Production Mode###")
+if __name__ == "__main__":
+    # Set the logging level
+    if kTestingMode or kForceDebug:
+        logging.basicConfig(filename='dsMigrate.log',level=logging.DEBUG)
+    else:
+        logging.basicConfig(filename='dsMigrate.log',level=logging.INFO)
+    if kTestingMode:
+        logging.info("### Starting in Test Mode ###")
+    else:
+        logging.info("### Starting in Production Mode###")
 
-# Check we are running with administrator privileges
-if not kTestingMode and os.getuid()!=0:
-    print("You must run this script with administrator privileges.")
-    sys.exit(1)
-
-# Get source and target directories from Directory Services
-(sourceDirectory,targetDirectory)=dsGetDirectories()
-print "Migrating from:",sourceDirectory[2],"to:",targetDirectory[2]
-if not kTestingMode:
-    theInput=raw_input('Type "CONTINUE" accept: ')
-    if theInput!="CONTINUE":
+    # Check we are running with administrator privileges
+    if not kTestingMode and os.getuid()!=0:
+        print("You must run this script with administrator privileges.")
         sys.exit(1)
 
-# Read source and target users and merge into a single table
-sourceUsers=dsRead(sourceDirectory,"/Users","UniqueID")
-targetUsers=dsRead(targetDirectory,"/Users","UniqueID")
-mergedUserIDs=dsMergeUniqueIDs(sourceUsers,targetUsers)
+    # Get source and target directories from Directory Services
+    (sourceDirectory,targetDirectory)=dsGetDirectories()
+    print "Migrating from:",sourceDirectory[2],"to:",targetDirectory[2]
+    if not kTestingMode:
+        theInput=raw_input('Type "CONTINUE" accept: ')
+        if theInput!="CONTINUE":
+            sys.exit(1)
 
-# Read source and target groups and merge into a single table
-sourceGroups=dsRead(sourceDirectory,"/Groups","PrimaryGroupID")
-targetGroups=dsRead(targetDirectory,"/Groups","PrimaryGroupID")
-mergedGroupIDs=dsMergeUniqueIDs(sourceGroups,targetGroups)
+    # Read source and target users and merge into a single table
+    sourceUsers=dsRead(sourceDirectory,"/Users","UniqueID")
+    targetUsers=dsRead(targetDirectory,"/Users","UniqueID")
+    mergedUserIDs=dsMergeUniqueIDs(sourceUsers,targetUsers)
 
-# Get migration path
-migrationPath=raw_input("Enter the path to migrate: ").strip()
-if not os.path.exists(migrationPath):
-    print "Path not found. Bye."
-    exit(0)
+    # Read source and target groups and merge into a single table
+    sourceGroups=dsRead(sourceDirectory,"/Groups","PrimaryGroupID")
+    targetGroups=dsRead(targetDirectory,"/Groups","PrimaryGroupID")
+    mergedGroupIDs=dsMergeUniqueIDs(sourceGroups,targetGroups)
 
-if not kTestingMode:
-    theInput=raw_input('Type "CONTINUE" to start the migration: ')
-    if theInput!="CONTINUE":
-        sys.exit(1)
+    # Get migration path
+    migrationPath=raw_input("Enter the path to migrate: ").strip()
+    if not os.path.exists(migrationPath):
+        print "Path not found. Bye."
+        exit(0)
 
-# Do the migration
-doMigration(migrationPath)
+    if not kTestingMode:
+        theInput=raw_input('Type "CONTINUE" to start the migration: ')
+        if theInput!="CONTINUE":
+            sys.exit(1)
 
-logging.info("### Ending ###")
-sys.exit(0)
+    # Do the migration
+    doMigration(migrationPath)
+
+    logging.info("### Ending ###")
+    sys.exit(0)
