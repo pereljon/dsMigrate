@@ -12,11 +12,7 @@ import re
 import logging
 import datetime
 import multiprocessing
-
-# CONSTANTS
-kTestingMode=True
-kForceDebug=False
-kMultiprocess=True
+import argparse
 
 def dsGetDirectories():
     # Check Directory Services search order
@@ -109,7 +105,7 @@ def dsMergeUniqueIDs(dsDictA,dsDictB):
         else:
             # Report on OpenDirectory users missing in Active Directory
             logging.debug("OpenDirectory record missing in Active Directory: %s",nextKey)
-            print "OpenDirectory record missing in Active Directory:",nextKey
+            if gVerbose: print "OpenDirectory record missing in Active Directory:",nextKey
     logging.debug("%d records combined",len(aDictionary))
     return aDictionary
 
@@ -133,7 +129,7 @@ def lockFile(aPath):
 
 def runCommand(aCommand):
     logging.debug("runCommand: %s"," ".join(aCommand))
-    if kTestingMode:
+    if gTestingMode:
         returnCode=0
     else:
         returnCode=subprocess.call(aCommand)
@@ -222,66 +218,138 @@ def migratePath(thePath):
     else:
         logging.debug ("No ACLs to change for: %s",thePath)
 
-def doMigration(aDirectory):
+def doMigration(directoryList,multiprocess,cpus):
     # Start the timer
     timeStart=datetime.datetime.now()
-    logging.info("Starting migration on: %s at: %s",migrationPath,str(timeStart))
-    print "Starting migration on:",migrationPath,"at:",timeStart
+    logging.info("Starting migration at: %s",timeStart)
+    if gVerbose: print "Starting migration at:",timeStart
+    # Start file processed count
     fileCount=0
-    cpus=multiprocessing.cpu_count()-1
-    pool=multiprocessing.Pool(cpus)
-    # Directory walk
-    for dirName,subdirList,fileList in os.walk(aDirectory):
-        # Make path list of files and subdirectories
-        filesAndSubdirs=[os.path.join(dirName,nextFile) for nextFile in fileList+subdirList]
-        fileCount+=len(filesAndSubdirs)
-        logging.debug("Files: %s, Walking: %s",fileCount,dirName)
-        # Increment file count
-        if kMultiprocess:
-            # pool.apply(migratePath,filesAndSubdirs)
-            pool.map_async(migratePath,filesAndSubdirs)
+    if multiprocess:
+        # Initialize multiprocessing pool
+        pool=multiprocessing.Pool(cpus)
+    for nextDirectory in directoryList:
+        if not os.path.exists(nextDirectory):
+            # WARNING: Path not found
+            logging.warn("doMigration: The following path does not exist: %s",nextDirectory)
+            if gVerbose: print "The following path does not exist:",nextDirectory
         else:
-            for nextPath in filesAndSubdirs:
-                # For all files and subdirectories
-                migratePath(nextPath)
-    logging.info("End pool: %s", str(datetime.datetime.now()))
-    # Close pool
-    pool.close()
-    # Wait until pool processes complete
-    pool.join()
+            logging.info("Migrating: %s at: %s",nextDirectory,timeStart)
+            if gVerbose: print "Migrating:",nextDirectory,"at:",timeStart
+            # Migrate the root directory
+            migratePath(nextDirectory)
+            fileCount+=1
+            # Migrate all files and subdirectories
+            for dirName,subdirList,fileList in os.walk(nextDirectory):
+                # Make path list of files and subdirectories
+                filesAndSubdirs=[os.path.join(dirName,nextFile) for nextFile in fileList+subdirList]
+                # Increment file count
+                fileCount+=len(filesAndSubdirs)
+                logging.debug("Files: %s, Walking: %s",fileCount,dirName)
+                if multiprocess:
+                    # pool.apply(migratePath,filesAndSubdirs)
+                    pool.map_async(migratePath,filesAndSubdirs)
+                else:
+                    for nextPath in filesAndSubdirs:
+                        # For all files and subdirectories
+                        migratePath(nextPath)
+    if multiprocess:
+        logging.info("End pool: %s", str(datetime.datetime.now()))
+        # Close multiprocessing pool
+        pool.close()
+        # Wait until multiprocessing pool processes complete
+        pool.join()
     # Stop the timer
     timeEnd=datetime.datetime.now()
-    logging.info("Ending migration at: %s",str(timeEnd))
+    logging.info("Ending migration at: %s",timeEnd)
+    if gVerbose: print "Ending migration at:",timeEnd
     timeTotal=timeEnd-timeStart
-    logging.info("Total migration time: %s",str(timeTotal))
+    logging.info("Total migration time: %s",timeTotal)
     logging.info("Total files: %s",fileCount)
     if timeTotal.seconds > 0:
         filesPerSec=fileCount/timeTotal.seconds
         logging.info("Files per second: %s",filesPerSec)
 
-# MAIN
-if __name__ == "__main__":
+def main():
+    # GLOBALS
+    global gTestingMode
+    global gForceDebug
+    global gVerbose
+    global mergedUserIDs
+    global mergedGroupIDs
+
+    cpu_count=multiprocessing.cpu_count()
+
+    # Parse arguments
+    parser = argparse.ArgumentParser(description='Migrate filesystem POSIX and ACL permissions from one Mac OS X Directory Services server to another, where user and group UniqueIDs and Generated UUIDs have changed.')
+    parser.add_argument('directory',nargs='+',help='directory to migrate')
+    parser.add_argument('-t','--testing',action='store_true',help='run in testing mode. Migration commands are logged to log file.')
+    parser.add_argument('-s','--swap',action='store_true',help='run in swapped testing mode. Source and target Directory Services are swapped. Migration commands are logged to log file.')
+    parser.add_argument('-d','--debug',action='store_true',help='log all debugging info to log file. Not needed if running in testing mode.')
+    parser.add_argument('-m','--multiprocess',action='store_true',help='run in multiprocessing mode. Use -c/--cpu to specify the number of CPUs to use.')
+    parser.add_argument('-c','--cpu',type=int,default=cpu_count-1,metavar='CPUs',help='number of CPUs to use. Only matters if running in multiprocessing mode. Defaults to number of CPUs minus 1.')
+    parser.add_argument('-y','--yes',action='store_true',help='continue without prompting. Warning: do not use this unless you are 100% sure of what you are doing.')
+    parser.add_argument('-v','--verbose',action='store_true',help='verbose output.')
+    args = parser.parse_args()
+    directory=args.directory
+    swapDS=args.swap
+    # Set testing mode if running in testing mode or swapped testing mode
+    gTestingMode=args.testing or swapDS
+    gForceDebug=args.debug
+    multiprocess=args.multiprocess
+    cpus=args.cpu
+    autoYes=args.yes
+    # Set verbose output if requested or running in testing mode
+    gVerbose=args.verbose or gTestingMode
+
+    # Check we are running with administrator privileges
+    if not gTestingMode and os.getuid()!=0:
+        print "You must run this script with administrator privileges."
+        sys.exit(1)
+
     # Set the logging level
-    if kTestingMode or kForceDebug:
+    if gTestingMode or gForceDebug:
         logging.basicConfig(filename='dsMigrate.log',level=logging.DEBUG)
     else:
         logging.basicConfig(filename='dsMigrate.log',level=logging.INFO)
-    if kTestingMode:
-        logging.info("### Starting in Test Mode ###")
+    if gTestingMode:
+        logging.info("### Running in Test Mode ###")
+        print "### Running in Test Mode ###"
     else:
-        logging.info("### Starting in Production Mode###")
+        logging.info("### Running in Production Mode###")
+        if gVerbose: print "### Running in Production Mode ###"
 
-    # Check we are running with administrator privileges
-    if not kTestingMode and os.getuid()!=0:
-        print("You must run this script with administrator privileges.")
-        sys.exit(1)
+    # Check arguments
+    if multiprocess:
+        if cpus==0:
+            print "ERROR: CPU value cannot be 0."
+            sys.exit(1)
+        elif cpus==1:
+            print "ERROR: Running in multiprocessing mode with 1 CPU. Will run in single processor mode instead."
+            sys.exit(1)
+        elif cpus>cpu_count:
+            # Too many CPUs requested
+            if gVerbose: print cpus,"CPUs requested but only",cpu_count,"available. Will run with",cpu_count,"CPUs."
+            cpus=cpu_count
+        elif cpus<0 and abs(cpus)<cpu_count:
+            # Negative CPUs request using less than maximum number of CPUs available
+            cpus=cpu_count+cpus
+        elif cpus<0 and abs(cpus)>=cpu_count:
+            # Negative CPUs request with value equal or greater than number of CPUs available
+            print "ERROR: Maximum number of CPUs available are:", cpu_count
+            sys.exit(1)
+        if gVerbose: print "Multiprocess Mode with",cpus,"CPUs."
 
     # Get source and target directories from Directory Services
-    (sourceDirectory,targetDirectory)=dsGetDirectories()
+    if swapDS:
+        # Running in swapped Directory Services test mode
+        (targetDirectory,sourceDirectory)=dsGetDirectories()
+    else:
+        (sourceDirectory,targetDirectory)=dsGetDirectories()
     print "Migrating from:",sourceDirectory[2],"to:",targetDirectory[2]
-    if not kTestingMode:
-        theInput=raw_input('Type "CONTINUE" accept: ')
-        if theInput!="CONTINUE":
+    if not gTestingMode and not autoYes:
+        theInput=raw_input('Type "YES" if this is correct: ')
+        if theInput!="YES":
             sys.exit(1)
 
     # Read source and target users and merge into a single table
@@ -294,19 +362,17 @@ if __name__ == "__main__":
     targetGroups=dsRead(targetDirectory,"/Groups","PrimaryGroupID")
     mergedGroupIDs=dsMergeUniqueIDs(sourceGroups,targetGroups)
 
-    # Get migration path
-    migrationPath=raw_input("Enter the path to migrate: ").strip()
-    if not os.path.exists(migrationPath):
-        print "Path not found. Bye."
-        exit(0)
-
-    if not kTestingMode:
-        theInput=raw_input('Type "CONTINUE" to start the migration: ')
-        if theInput!="CONTINUE":
+    if not gTestingMode and not autoYes:
+        theInput=raw_input('Type "START" to start the migration: ')
+        if theInput!="START":
             sys.exit(1)
 
     # Do the migration
-    doMigration(migrationPath)
+    doMigration(directory,multiprocess,cpus)
 
     logging.info("### Ending ###")
+
+# MAIN
+if __name__ == "__main__":
+    main()
     sys.exit(0)
