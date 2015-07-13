@@ -46,6 +46,9 @@ def dsGetDirectories():
     elif sourceNode.startswith("/Active Directory/"):
         sourceType = "AD"
         sourceDomain = re.search("/Active Directory/(.+)/All Domains", sourceNode).group(1)
+    else:
+        logging.critical("Unknown source node type: %s", sourceNode)
+        sys.exit(1)
     targetNode = theNodes[1]
     if targetNode.startswith("/LDAPv3/"):
         targetType = "LDAP"
@@ -53,7 +56,10 @@ def dsGetDirectories():
     elif targetNode.startswith("/Active Directory/"):
         targetType = "AD"
         targetDomain = re.search("/Active Directory/(.+)/All Domains", targetNode).group(1)
-    return ((sourceType, sourceDomain, sourceNode), (targetType, targetDomain, targetNode))
+    else:
+        logging.critical("Unknown target node type: %s", targetNode)
+        sys.exit(1)
+    return (sourceType, sourceDomain, sourceNode), (targetType, targetDomain, targetNode)
 
 
 def dsRead(theDirectory, thePath, theKey):
@@ -114,7 +120,8 @@ def dsMergeUniqueIDs(dsDictA, dsDictB):
         else:
             # Report on OpenDirectory users missing in Active Directory
             logging.debug("OpenDirectory record missing in Active Directory: %s", nextKey)
-            if gVerbose: print "OpenDirectory record missing in Active Directory:", nextKey
+            if gVerbose:
+                print "OpenDirectory record missing in Active Directory:", nextKey
     logging.debug("%d records combined", len(aDictionary))
     return aDictionary
 
@@ -209,7 +216,7 @@ def migratePath(thePath):
             aceOwner = theACE[1]  # Group 1: ACE group/user if valid
             aceOrphan = theACE[2]  # Group 2: GUID if group/user not valid
             aceInherited = theACE[3]  # Group 3: "inherited" if inherited ACE
-            acePermission = theACE[4]  # Group 4: ACL permision string
+            acePermission = theACE[4]  # Group 4: ACL permission string
             if aceOrphan:
                 # Orphan ACE. Will be deleted
                 logging.warn("Removing orphan ACE: %s %s for %s", aceOrder, aceOrphan, thePath)
@@ -239,7 +246,8 @@ def doMigration(directoryList, multiprocess, cpus):
     # Start the timer
     timeStart = datetime.datetime.now()
     logging.info("Starting migration at: %s", timeStart)
-    if gVerbose: print "Starting migration at:", timeStart
+    if gVerbose:
+        print "Starting migration at:", timeStart
     # Start file processed count
     fileCount = 0
     if multiprocess:
@@ -249,10 +257,12 @@ def doMigration(directoryList, multiprocess, cpus):
         if not os.path.exists(nextDirectory):
             # WARNING: Path not found
             logging.warn("doMigration: The following path does not exist: %s", nextDirectory)
-            if gVerbose: print "The following path does not exist:", nextDirectory
+            if gVerbose:
+                print "The following path does not exist:", nextDirectory
         else:
             logging.info("Migrating: %s at: %s", nextDirectory, timeStart)
-            if gVerbose: print "Migrating:", nextDirectory, "at:", timeStart
+            if gVerbose:
+                print "Migrating:", nextDirectory, "at:", timeStart
             # Migrate the root directory
             migratePath(nextDirectory)
             fileCount += 1
@@ -279,13 +289,15 @@ def doMigration(directoryList, multiprocess, cpus):
     # Stop the timer
     timeEnd = datetime.datetime.now()
     logging.info("Ending migration at: %s", timeEnd)
-    if gVerbose: print "Ending migration at:", timeEnd
+    if gVerbose:
+        print "Ending migration at:", timeEnd
     timeTotal = timeEnd - timeStart
     logging.info("Total migration time: %s", timeTotal)
     logging.info("Total files: %s", fileCount)
     if timeTotal.seconds > 0:
         filesPerSec = fileCount / timeTotal.seconds
         logging.info("Files per second: %s", filesPerSec)
+
 
 def parseArguments():
     # GLOBALS
@@ -297,7 +309,7 @@ def parseArguments():
     parser = argparse.ArgumentParser(
         description='Migrate filesystem POSIX and ACL permissions from one Mac OS X Directory Services server to another, where user and group UniqueIDs and Generated UUIDs have changed.')
     parser.add_argument('directory', nargs='+', help='directory to migrate')
-    parser.add_argument('-c', '--cpu', type=int, default= multiprocessing.cpu_count() - 2, metavar='CPUs',
+    parser.add_argument('-c', '--cpu', type=int, default=multiprocessing.cpu_count() - 2, metavar='CPUs',
                         help='number of CPUs to use. Only matters if running in multiprocessing mode. Defaults to number of CPUs minus 2.')
     parser.add_argument('-d', '--debug', action='store_true',
                         help='log all debugging info to log file. Not needed if running in testing mode.')
@@ -321,13 +333,14 @@ def parseArguments():
 
     return args
 
+
 def main():
     # GLOBALS
     global mergedUserIDs
     global mergedGroupIDs
 
     # Parse arguments
-    args=parseArguments()
+    args = parseArguments()
 
     # Check arguments
     if args.multiprocess:
@@ -340,7 +353,8 @@ def main():
             sys.exit(1)
         elif args.cpu > cpu_count:
             # Too many CPUs requested
-            if gVerbose: print args.cpu, "CPUs requested but only", cpu_count, "available. Will run with", cpu_count, "CPUs."
+            if gVerbose:
+                print args.cpu, "CPUs requested but only", cpu_count, "available. Will run with", cpu_count, "CPUs."
             cpus = cpu_count
         elif args.cpu < 0 and abs(args.cpu) < cpu_count:
             # Negative CPUs request using less than maximum number of CPUs available
@@ -351,7 +365,10 @@ def main():
             sys.exit(1)
         else:
             cpus = cpu_count
-        if gVerbose: print "Multiprocess Mode with", cpus, "CPUs."
+        if gVerbose:
+            print "Multiprocess Mode with", cpus, "CPUs."
+    else:
+        cpus = None
 
     # Check we are running with administrator privileges
     if not gTestingMode and os.getuid() != 0:
@@ -368,8 +385,8 @@ def main():
         print "### Running in Test Mode ###"
     else:
         logging.info("### Running in Production Mode###")
-        if gVerbose: print "### Running in Production Mode ###"
-
+        if gVerbose:
+            print "### Running in Production Mode ###"
 
     # Get source and target directories from Directory Services
     if args.swap:
