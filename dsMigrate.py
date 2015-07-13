@@ -287,45 +287,71 @@ def doMigration(directoryList, multiprocess, cpus):
         filesPerSec = fileCount / timeTotal.seconds
         logging.info("Files per second: %s", filesPerSec)
 
-
-def main():
+def parseArguments():
     # GLOBALS
     global gTestingMode
     global gForceDebug
     global gVerbose
-    global mergedUserIDs
-    global mergedGroupIDs
-
-    cpu_count = multiprocessing.cpu_count()
 
     # Parse arguments
     parser = argparse.ArgumentParser(
         description='Migrate filesystem POSIX and ACL permissions from one Mac OS X Directory Services server to another, where user and group UniqueIDs and Generated UUIDs have changed.')
     parser.add_argument('directory', nargs='+', help='directory to migrate')
-    parser.add_argument('-t', '--testing', action='store_true',
-                        help='run in testing mode. Migration commands are logged to log file.')
-    parser.add_argument('-s', '--swap', action='store_true',
-                        help='run in swapped testing mode. Source and target Directory Services are swapped. Migration commands are logged to log file.')
+    parser.add_argument('-c', '--cpu', type=int, default= multiprocessing.cpu_count() - 2, metavar='CPUs',
+                        help='number of CPUs to use. Only matters if running in multiprocessing mode. Defaults to number of CPUs minus 2.')
     parser.add_argument('-d', '--debug', action='store_true',
                         help='log all debugging info to log file. Not needed if running in testing mode.')
     parser.add_argument('-m', '--multiprocess', action='store_true',
                         help='run in multiprocessing mode. Use -c/--cpu to specify the number of CPUs to use.')
-    parser.add_argument('-c', '--cpu', type=int, default=cpu_count - 1, metavar='CPUs',
-                        help='number of CPUs to use. Only matters if running in multiprocessing mode. Defaults to number of CPUs minus 1.')
+    parser.add_argument('-s', '--swap', action='store_true',
+                        help='run in swapped testing mode. Source and target Directory Services are swapped. Migration commands are logged to log file.')
+    parser.add_argument('-t', '--testing', action='store_true',
+                        help='run in testing mode. Migration commands are logged to log file.')
     parser.add_argument('-y', '--yes', action='store_true',
-                        help='continue without prompting. Warning: do not use this unless you are 100% sure of what you are doing.')
+                        help='continue without prompting. Warning: do not use this unless you are 100%% sure of what you are doing.')
     parser.add_argument('-v', '--verbose', action='store_true', help='verbose output.')
     args = parser.parse_args()
-    directory = args.directory
-    swapDS = args.swap
+
+    # Set globals from arguments
     # Set testing mode if running in testing mode or swapped testing mode
-    gTestingMode = args.testing or swapDS
+    gTestingMode = args.testing or args.swap
     gForceDebug = args.debug
-    multiprocess = args.multiprocess
-    cpus = args.cpu
-    autoYes = args.yes
     # Set verbose output if requested or running in testing mode
     gVerbose = args.verbose or gTestingMode
+
+    return args
+
+def main():
+    # GLOBALS
+    global mergedUserIDs
+    global mergedGroupIDs
+
+    # Parse arguments
+    args=parseArguments()
+
+    # Check arguments
+    if args.multiprocess:
+        cpu_count = multiprocessing.cpu_count()
+        if args.cpu == 0:
+            print "ERROR: CPU value cannot be 0."
+            sys.exit(1)
+        elif args.cpu == 1:
+            print "ERROR: Running in multiprocessing mode with 1 CPU. Will run in single processor mode instead."
+            sys.exit(1)
+        elif args.cpu > cpu_count:
+            # Too many CPUs requested
+            if gVerbose: print args.cpu, "CPUs requested but only", cpu_count, "available. Will run with", cpu_count, "CPUs."
+            cpus = cpu_count
+        elif args.cpu < 0 and abs(args.cpu) < cpu_count:
+            # Negative CPUs request using less than maximum number of CPUs available
+            cpus = cpu_count + args.cpu
+        elif args.cpu < 0 and abs(args.cpu) >= cpu_count:
+            # Negative CPUs request with value equal or greater than number of CPUs available
+            print "ERROR: Maximum number of CPUs available are:", cpu_count
+            sys.exit(1)
+        else:
+            cpus = cpu_count
+        if gVerbose: print "Multiprocess Mode with", cpus, "CPUs."
 
     # Check we are running with administrator privileges
     if not gTestingMode and os.getuid() != 0:
@@ -344,35 +370,15 @@ def main():
         logging.info("### Running in Production Mode###")
         if gVerbose: print "### Running in Production Mode ###"
 
-    # Check arguments
-    if multiprocess:
-        if cpus == 0:
-            print "ERROR: CPU value cannot be 0."
-            sys.exit(1)
-        elif cpus == 1:
-            print "ERROR: Running in multiprocessing mode with 1 CPU. Will run in single processor mode instead."
-            sys.exit(1)
-        elif cpus > cpu_count:
-            # Too many CPUs requested
-            if gVerbose: print cpus, "CPUs requested but only", cpu_count, "available. Will run with", cpu_count, "CPUs."
-            cpus = cpu_count
-        elif cpus < 0 and abs(cpus) < cpu_count:
-            # Negative CPUs request using less than maximum number of CPUs available
-            cpus = cpu_count + cpus
-        elif cpus < 0 and abs(cpus) >= cpu_count:
-            # Negative CPUs request with value equal or greater than number of CPUs available
-            print "ERROR: Maximum number of CPUs available are:", cpu_count
-            sys.exit(1)
-        if gVerbose: print "Multiprocess Mode with", cpus, "CPUs."
 
     # Get source and target directories from Directory Services
-    if swapDS:
+    if args.swap:
         # Running in swapped Directory Services test mode
         (targetDirectory, sourceDirectory) = dsGetDirectories()
     else:
         (sourceDirectory, targetDirectory) = dsGetDirectories()
     print "Migrating from:", sourceDirectory[2], "to:", targetDirectory[2]
-    if not gTestingMode and not autoYes:
+    if not gTestingMode and not args.autoYes:
         theInput = raw_input('Type "YES" if this is correct: ')
         if theInput != "YES":
             sys.exit(1)
@@ -387,13 +393,13 @@ def main():
     targetGroups = dsRead(targetDirectory, "/Groups", "PrimaryGroupID")
     mergedGroupIDs = dsMergeUniqueIDs(sourceGroups, targetGroups)
 
-    if not gTestingMode and not autoYes:
+    if not gTestingMode and not args.autoYes:
         theInput = raw_input('Type "START" to start the migration: ')
         if theInput != "START":
             sys.exit(1)
 
     # Do the migration
-    doMigration(directory, multiprocess, cpus)
+    doMigration(args.directory, args.multiprocess, cpus)
 
     logging.info("### Ending ###")
 
