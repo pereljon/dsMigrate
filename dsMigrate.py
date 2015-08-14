@@ -62,13 +62,14 @@ def dsGetDirectories():
     return (sourceType, sourceDomain, sourceNode), (targetType, targetDomain, targetNode)
 
 
-def dsRead(theDirectory, thePath, theKey):
+def dsReadAll(theDirectory, thePath, theKey):
     # Get Directory Services users returning dictionary with username,theKey,and GeneratedUID
     # GeneratedUID isn't being used as ACLs can only be assigned by name
     logging.info("Reading directory %s at path %s for key %s", theDirectory, thePath, theKey)
     theNode = theDirectory[2]
     try:
-        theRecords = subprocess.check_output(["dscl", "-plist", theNode, "-readall", thePath, theKey, "GeneratedUID"])
+        theRecords = subprocess.check_output(
+            ["dscl", "-plist", theNode, "-readall", thePath, theKey, "RecordName", "GeneratedUID"])
     except exceptions.OSError as theError:
         logging.critical("dscl: OS Error: %s", theError)
         sys.exit(1)
@@ -400,14 +401,16 @@ def main():
         if theInput != "YES":
             sys.exit(1)
 
-    # Read source and target users and merge into a single table
-    sourceUsers = dsRead(sourceDirectory, "/Users", "UniqueID")
-    targetUsers = dsRead(targetDirectory, "/Users", "UniqueID")
-    mergedUserIDs = dsMergeUniqueIDs(sourceUsers, targetUsers)
+    # Read source and target users
+    sourceUsers = dsReadAll(sourceDirectory, "/Users", "UniqueID")
+    targetUsers = dsReadAll(targetDirectory, "/Users", "UniqueID")
 
-    # Read source and target groups and merge into a single table
-    sourceGroups = dsRead(sourceDirectory, "/Groups", "PrimaryGroupID")
-    targetGroups = dsRead(targetDirectory, "/Groups", "PrimaryGroupID")
+    # Read source and target groups
+    sourceGroups = dsReadAll(sourceDirectory, "/Groups", "PrimaryGroupID")
+    targetGroups = dsReadAll(targetDirectory, "/Groups", "PrimaryGroupID")
+
+    # Merge sources and targets (users and groups) into single tables
+    mergedUserIDs = dsMergeUniqueIDs(sourceUsers, targetUsers)
     mergedGroupIDs = dsMergeUniqueIDs(sourceGroups, targetGroups)
 
     if not gTestingMode and not args.autoYes:
