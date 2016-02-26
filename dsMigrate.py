@@ -15,7 +15,46 @@ import multiprocessing
 import argparse
 
 
-def dsGetDirectories():
+def parse_arguments():
+    # GLOBALS
+    global gTestingMode
+    global gForceDebug
+    global gVerbose
+
+    # Parse arguments
+    parser = argparse.ArgumentParser(
+        description='Migrate filesystem POSIX and ACL permissions from one Mac OS X Directory Services server '
+                    'to another, where user and group UniqueIDs and Generated UUIDs have changed.')
+    parser.add_argument('directory', nargs='+', help='directory to migrate')
+    parser.add_argument('-c', '--cpu', type=int, default=multiprocessing.cpu_count() - 2, metavar='CPUs',
+                        help='number of CPUs to use. Only matters if running in multiprocessing mode. '
+                             'Defaults to number of CPUs minus 2.')
+    parser.add_argument('-d', '--debug', action='store_true',
+                        help='log all debugging info to log file. Not needed if running in testing mode.')
+    parser.add_argument('-m', '--multiprocess', action='store_true',
+                        help='run in multiprocessing mode. Use -c/--cpu to specify the number of CPUs to use.')
+    parser.add_argument('-s', '--swap', action='store_true',
+                        help='run in swapped testing mode. Source and target Directory Services are swapped. '
+                             'Migration commands are logged to log file.')
+    parser.add_argument('-t', '--testing', action='store_true',
+                        help='run in testing mode. Migration commands are logged to log file.')
+    parser.add_argument('-y', '--yes', action='store_true',
+                        help='continue without prompting. '
+                             'Warning: do not use this unless you are 100%% sure of what you are doing.')
+    parser.add_argument('-v', '--verbose', action='store_true', help='verbose output.')
+    args = parser.parse_args()
+
+    # Set globals from arguments
+    # Set testing mode if running in testing mode or swapped testing mode
+    gTestingMode = args.testing or args.swap
+    gForceDebug = args.debug
+    # Set verbose output if requested or running in testing mode
+    gVerbose = args.verbose or gTestingMode
+
+    return args
+
+
+def ds_get_directories():
     # Check Directory Services search order
     logging.info("Get source and target directories")
     try:
@@ -62,14 +101,14 @@ def dsGetDirectories():
     return (sourceType, sourceDomain, sourceNode), (targetType, targetDomain, targetNode)
 
 
-def dsReadAll(theDirectory, thePath, theKey):
+def ds_read_all(theDirectory, the_path, theKey):
     # Get Directory Services users returning dictionary with username,theKey,and GeneratedUID
     # GeneratedUID isn't being used as ACLs can only be assigned by name
-    logging.info("Reading directory %s at path %s for key %s", theDirectory, thePath, theKey)
+    logging.info("Reading directory %s at path %s for key %s", theDirectory, the_path, theKey)
     theNode = theDirectory[2]
     try:
         theRecords = subprocess.check_output(
-            ["dscl", "-plist", theNode, "-readall", thePath, theKey, "RecordName", "GeneratedUID"])
+            ["dscl", "-plist", theNode, "-readall", the_path, theKey, "RecordName", "GeneratedUID"])
     except exceptions.OSError as theError:
         logging.critical("dscl: OS Error: %s", theError)
         sys.exit(1)
@@ -110,7 +149,7 @@ def dsReadAll(theDirectory, thePath, theKey):
     return theDictionary
 
 
-def dsMergeUniqueIDs(dsDictA, dsDictB):
+def ds_merge_unique_ids(dsDictA, dsDictB):
     # Create merged dictionary of OD and AD uniqueIDs
     logging.info("Merging uniqueIDs")
     aDictionary = {}
@@ -127,7 +166,7 @@ def dsMergeUniqueIDs(dsDictA, dsDictB):
     return aDictionary
 
 
-def unlockFile(aPath):
+def unlock_file(aPath):
     # Unlock file
     logging.warn("Unlocking file: %s", aPath)
     unlockCommand = "chflags", "nouchg", aPath
@@ -137,7 +176,7 @@ def unlockFile(aPath):
     return returnCode
 
 
-def lockFile(aPath):
+def lock_file(aPath):
     # Lock file
     logging.warn("Locking file: %s", aPath)
     lockCommand = "chflags", "uchg", aPath
@@ -147,8 +186,8 @@ def lockFile(aPath):
     return returnCode
 
 
-def runCommand(aCommand):
-    logging.debug("runCommand: %s", " ".join(aCommand))
+def run_command(aCommand):
+    logging.debug("run_command: %s", " ".join(aCommand))
     if gTestingMode:
         returnCode = 0
     else:
@@ -156,7 +195,7 @@ def runCommand(aCommand):
         if returnCode:
             logging.warn("Return code: %s for: %s", returnCode, " ".join(aCommand))
             # Unlock the path (last item in command list)
-            returnCode = unlockFile(aCommand[-1])
+            returnCode = unlock_file(aCommand[-1])
             if returnCode:
                 # Error unlocking
                 return returnCode
@@ -171,12 +210,12 @@ def runCommand(aCommand):
     return returnCode
 
 
-def migratePath(thePath):
-    logging.debug("migratePath: %s", thePath)
+def migrate_path(the_path):
+    logging.debug("migrate_path: %s", the_path)
     # Track if this path has been unlocked
     unlockedPath = False
-    # List file at thePath
-    pathRead = subprocess.check_output(["ls", "-aled", thePath]).splitlines()
+    # List file at the_path
+    pathRead = subprocess.check_output(["ls", "-aled", the_path]).splitlines()
     # Read POSIX owner/group
     thePOSIX = re.findall(r".+?\s+.+?\s+(.+?)\s+(.+?)\s+.+", pathRead[0])
     theUser = thePOSIX[0][0]
@@ -185,21 +224,21 @@ def migratePath(thePath):
     if theUser in mergedUserIDs and theGroup in mergedGroupIDs:
         # Change owner and group
         logging.debug("Changing user & group: %s:%s for %s", mergedUserIDs[theUser][1], mergedGroupIDs[theGroup][1],
-                      thePath)
-        chownCommand = "chown", mergedUserIDs[theUser][1] + ":" + mergedGroupIDs[theGroup][1], thePath
-        commandResult = runCommand(chownCommand)
+                      the_path)
+        chownCommand = "chown", mergedUserIDs[theUser][1] + ":" + mergedGroupIDs[theGroup][1], the_path
+        commandResult = run_command(chownCommand)
     elif theUser in mergedUserIDs:
         # Change owner
-        logging.debug("Changing user: %s for %s", mergedUserIDs[theUser][1], thePath)
-        chownCommand = "chown", mergedUserIDs[theUser][1], thePath
-        commandResult = runCommand(chownCommand)
+        logging.debug("Changing user: %s for %s", mergedUserIDs[theUser][1], the_path)
+        chownCommand = "chown", mergedUserIDs[theUser][1], the_path
+        commandResult = run_command(chownCommand)
     elif theGroup in mergedGroupIDs:
         # Change group
-        logging.debug("Changing group: %s for %s", mergedGroupIDs[theGroup][1], thePath)
-        chownCommand = "chown", ":" + mergedGroupIDs[theGroup][1], thePath
-        commandResult = runCommand(chownCommand)
+        logging.debug("Changing group: %s for %s", mergedGroupIDs[theGroup][1], the_path)
+        chownCommand = "chown", ":" + mergedGroupIDs[theGroup][1], the_path
+        commandResult = run_command(chownCommand)
     else:
-        logging.debug("No POSIX change for: %s", thePath)
+        logging.debug("No POSIX change for: %s", the_path)
         commandResult = 0
     # Track if we unlocked the file
     if commandResult == "unlocked":
@@ -220,30 +259,30 @@ def migratePath(thePath):
             acePermission = theACE[4]  # Group 4: ACL permission string
             if aceOrphan:
                 # Orphan ACE. Will be deleted
-                logging.warn("Removing orphan ACE: %s %s for %s", aceOrder, aceOrphan, thePath)
-                chmodCommand = ("chmod", "-a#", aceOrder, thePath)
+                logging.warn("Removing orphan ACE: %s %s for %s", aceOrder, aceOrphan, the_path)
+                chmodCommand = ("chmod", "-a#", aceOrder, the_path)
                 # Keep track of how many ACEs we have deleted
                 aceDeleteCount += 1
             elif aceInherited:
                 # Inherited ACE
-                logging.debug("Changing inherited ACE: %s %s %s for %s", aceOrder, aceOwner, acePermission, thePath)
-                chmodCommand = "chmod", "=ai#", aceOrder, aceOwner + " " + acePermission, thePath
+                logging.debug("Changing inherited ACE: %s %s %s for %s", aceOrder, aceOwner, acePermission, the_path)
+                chmodCommand = "chmod", "=ai#", aceOrder, aceOwner + " " + acePermission, the_path
             else:
                 # Non-inherited ACE
-                logging.debug("Changing ACE: %s %s %s for %s", aceOrder, aceOwner, acePermission, thePath)
-                chmodCommand = "chmod", "=a#", aceOrder, aceOwner + " " + acePermission, thePath
-            commandResult = runCommand(chmodCommand)
+                logging.debug("Changing ACE: %s %s %s for %s", aceOrder, aceOwner, acePermission, the_path)
+                chmodCommand = "chmod", "=a#", aceOrder, aceOwner + " " + acePermission, the_path
+            commandResult = run_command(chmodCommand)
             # Track if we unlocked the file
             if commandResult == "unlocked":
                 unlockedPath = True
         if unlockedPath:
             # Lock the file if we unlocked the file
-            lockFile(thePath)
+            lock_file(the_path)
     else:
-        logging.debug("No ACLs to change for: %s", thePath)
+        logging.debug("No ACLs to change for: %s", the_path)
 
 
-def doMigration(directoryList, multiprocess, cpus):
+def do_migration(directory_list, multiprocess, cpus):
     # Start the timer
     timeStart = datetime.datetime.now()
     logging.info("Starting migration at: %s", timeStart)
@@ -254,10 +293,10 @@ def doMigration(directoryList, multiprocess, cpus):
     if multiprocess:
         # Initialize multiprocessing pool
         pool = multiprocessing.Pool(cpus)
-    for nextDirectory in directoryList:
+    for nextDirectory in directory_list:
         if not os.path.exists(nextDirectory):
             # WARNING: Path not found
-            logging.warn("doMigration: The following path does not exist: %s", nextDirectory)
+            logging.warn("do_migration: The following path does not exist: %s", nextDirectory)
             if gVerbose:
                 print "The following path does not exist:", nextDirectory
         else:
@@ -265,7 +304,7 @@ def doMigration(directoryList, multiprocess, cpus):
             if gVerbose:
                 print "Migrating:", nextDirectory, "at:", timeStart
             # Migrate the root directory
-            migratePath(nextDirectory)
+            migrate_path(nextDirectory)
             fileCount += 1
             # Migrate all files and subdirectories
             for dirName, subdirList, fileList in os.walk(nextDirectory):
@@ -275,12 +314,12 @@ def doMigration(directoryList, multiprocess, cpus):
                 fileCount += len(filesAndSubdirs)
                 logging.debug("Files: %s, Walking: %s", fileCount, dirName)
                 if multiprocess:
-                    # pool.apply(migratePath,filesAndSubdirs)
-                    pool.map_async(migratePath, filesAndSubdirs)
+                    # pool.apply(migrate_path,filesAndSubdirs)
+                    pool.map_async(migrate_path, filesAndSubdirs)
                 else:
                     for nextPath in filesAndSubdirs:
                         # For all files and subdirectories
-                        migratePath(nextPath)
+                        migrate_path(nextPath)
     if multiprocess:
         logging.info("End pool: %s", str(datetime.datetime.now()))
         # Close multiprocessing pool
@@ -300,48 +339,13 @@ def doMigration(directoryList, multiprocess, cpus):
         logging.info("Files per second: %s", filesPerSec)
 
 
-def parseArguments():
-    # GLOBALS
-    global gTestingMode
-    global gForceDebug
-    global gVerbose
-
-    # Parse arguments
-    parser = argparse.ArgumentParser(
-        description='Migrate filesystem POSIX and ACL permissions from one Mac OS X Directory Services server to another, where user and group UniqueIDs and Generated UUIDs have changed.')
-    parser.add_argument('directory', nargs='+', help='directory to migrate')
-    parser.add_argument('-c', '--cpu', type=int, default=multiprocessing.cpu_count() - 2, metavar='CPUs',
-                        help='number of CPUs to use. Only matters if running in multiprocessing mode. Defaults to number of CPUs minus 2.')
-    parser.add_argument('-d', '--debug', action='store_true',
-                        help='log all debugging info to log file. Not needed if running in testing mode.')
-    parser.add_argument('-m', '--multiprocess', action='store_true',
-                        help='run in multiprocessing mode. Use -c/--cpu to specify the number of CPUs to use.')
-    parser.add_argument('-s', '--swap', action='store_true',
-                        help='run in swapped testing mode. Source and target Directory Services are swapped. Migration commands are logged to log file.')
-    parser.add_argument('-t', '--testing', action='store_true',
-                        help='run in testing mode. Migration commands are logged to log file.')
-    parser.add_argument('-y', '--yes', action='store_true',
-                        help='continue without prompting. Warning: do not use this unless you are 100%% sure of what you are doing.')
-    parser.add_argument('-v', '--verbose', action='store_true', help='verbose output.')
-    args = parser.parse_args()
-
-    # Set globals from arguments
-    # Set testing mode if running in testing mode or swapped testing mode
-    gTestingMode = args.testing or args.swap
-    gForceDebug = args.debug
-    # Set verbose output if requested or running in testing mode
-    gVerbose = args.verbose or gTestingMode
-
-    return args
-
-
 def main():
     # GLOBALS
     global mergedUserIDs
     global mergedGroupIDs
 
     # Parse arguments
-    args = parseArguments()
+    args = parse_arguments()
 
     # Check arguments
     if args.multiprocess:
@@ -392,36 +396,37 @@ def main():
     # Get source and target directories from Directory Services
     if args.swap:
         # Running in swapped Directory Services test mode
-        (targetDirectory, sourceDirectory) = dsGetDirectories()
+        (targetDirectory, sourceDirectory) = ds_get_directories()
     else:
-        (sourceDirectory, targetDirectory) = dsGetDirectories()
+        (sourceDirectory, targetDirectory) = ds_get_directories()
     print "Migrating from:", sourceDirectory[2], "to:", targetDirectory[2]
-    if not gTestingMode and not args.autoYes:
+    if not gTestingMode and not args.yes:
         theInput = raw_input('Type "YES" if this is correct: ')
         if theInput != "YES":
             sys.exit(1)
 
     # Read source and target users
-    sourceUsers = dsReadAll(sourceDirectory, "/Users", "UniqueID")
-    targetUsers = dsReadAll(targetDirectory, "/Users", "UniqueID")
+    sourceUsers = ds_read_all(sourceDirectory, "/Users", "UniqueID")
+    targetUsers = ds_read_all(targetDirectory, "/Users", "UniqueID")
 
     # Read source and target groups
-    sourceGroups = dsReadAll(sourceDirectory, "/Groups", "PrimaryGroupID")
-    targetGroups = dsReadAll(targetDirectory, "/Groups", "PrimaryGroupID")
+    sourceGroups = ds_read_all(sourceDirectory, "/Groups", "PrimaryGroupID")
+    targetGroups = ds_read_all(targetDirectory, "/Groups", "PrimaryGroupID")
 
     # Merge sources and targets (users and groups) into single tables
-    mergedUserIDs = dsMergeUniqueIDs(sourceUsers, targetUsers)
-    mergedGroupIDs = dsMergeUniqueIDs(sourceGroups, targetGroups)
+    mergedUserIDs = ds_merge_unique_ids(sourceUsers, targetUsers)
+    mergedGroupIDs = ds_merge_unique_ids(sourceGroups, targetGroups)
 
-    if not gTestingMode and not args.autoYes:
+    if not gTestingMode and not args.yes:
         theInput = raw_input('Type "START" to start the migration: ')
         if theInput != "START":
             sys.exit(1)
 
     # Do the migration
-    doMigration(args.directory, args.multiprocess, cpus)
+    do_migration(args.directory, args.multiprocess, cpus)
 
     logging.info("### Ending ###")
+
 
 # MAIN
 if __name__ == "__main__":
