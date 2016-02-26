@@ -159,9 +159,9 @@ def ds_merge_unique_ids(dsDictA, dsDictB):
             aDictionary[nextKey] = (dsDictA[nextKey][0], dsDictB[nextKey][0])
         else:
             # Report on OpenDirectory users missing in Active Directory
-            logging.debug("OpenDirectory record missing in Active Directory: %s", nextKey)
+            logging.debug("Source record missing in target directory: %s", nextKey)
             if gVerbose:
-                print "OpenDirectory record missing in Active Directory:", nextKey
+                print "Source record missing in target directory:", nextKey
     logging.debug("%d records combined", len(aDictionary))
     return aDictionary
 
@@ -406,15 +406,27 @@ def main():
             sys.exit(1)
 
     # Read source and target users
+    if gVerbose:
+        print "Reading source users:"
     sourceUsers = ds_read_all(sourceDirectory, "/Users", "UniqueID")
+    if gVerbose:
+        print "Reading target users:"
     targetUsers = ds_read_all(targetDirectory, "/Users", "UniqueID")
 
     # Read source and target groups
+    if gVerbose:
+        print "Reading source groups:"
     sourceGroups = ds_read_all(sourceDirectory, "/Groups", "PrimaryGroupID")
+    if gVerbose:
+        print "Reading target groups:"
     targetGroups = ds_read_all(targetDirectory, "/Groups", "PrimaryGroupID")
 
     # Merge sources and targets (users and groups) into single tables
+    if gVerbose:
+        print "Merging users:"
     mergedUserIDs = ds_merge_unique_ids(sourceUsers, targetUsers)
+    if gVerbose:
+        print "Merging groups:"
     mergedGroupIDs = ds_merge_unique_ids(sourceGroups, targetGroups)
 
     if not gTestingMode and not args.yes:
